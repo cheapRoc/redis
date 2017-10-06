@@ -32,7 +32,7 @@
     {
       name: "redis-server",
       port: 6379,
-      exec: "/usr/local/bin/manage.sh run",
+      exec: "/usr/local/bin/redis-server /etc/redis.conf",
       health: {
         exec: "/usr/local/bin/manage.sh health",
         ttl: "25s",
@@ -47,7 +47,7 @@
     {
       name: "redis-sentinel",
       port: 26379,
-      exec: "/usr/local/bin/manage.sh runSentinel",
+      exec: "/usr/local/bin/redis-sentinel /etc/sentinel.conf",
       health: {
         exec: "/usr/local/bin/manage.sh healthSentinel",
         ttl: "25s",
