@@ -1,0 +1,87 @@
+{
+  consul: "localhost:8500",
+  logging: {
+    level: "INFO",
+    format: "default",
+    output: "stdout"
+  },
+  jobs: [
+    {
+      name: "consul-agent",
+      exec: "/usr/local/bin/consul agent -data-dir=/opt/consul/data -config-dir=/opt/consul/config -rejoin -retry-join {{ if .CONSUL }}{{ .CONSUL }}{{ else }}consul{{ end }} -retry-max 10 -retry-interval 10s",
+      restart: "unlimited",
+    },
+    {
+      name: "preStart",
+      exec: "/usr/local/bin/manage.sh preStart",
+      when: {
+        source: "consul-agent",
+        once: "healthy"
+      },
+      restart: "never",
+    },
+    {
+      name: "preStop",
+      exec: "/usr/local/bin/manage.sh preStop",
+      when: {
+        source: "redis-server",
+        once: "stopping"
+      },
+      restart: "never",
+    },
+    {
+      name: "redis-server",
+      port: 6379,
+      exec: "/usr/local/bin/manage.sh run",
+      health: {
+        exec: "/usr/local/bin/manage.sh health",
+        ttl: "25s",
+        interval: "5s",
+      },
+      when: {
+        source: "preStart",
+        once: "stopped"
+      },
+      restart: "always",
+    },
+    {
+      name: "redis-sentinel",
+      port: 26379,
+      exec: "/usr/local/bin/manage.sh runSentinel",
+      health: {
+        exec: "/usr/local/bin/manage.sh healthSentinel",
+        ttl: "25s",
+        interval: "5s",
+      },
+      when: {
+        source: "preStart",
+        once: "stopped"
+      },
+      restart: "always",
+    },
+    {
+      name: "backup",
+      exec: "/usr/local/bin/manage.sh backUpIfTime",
+      timeout: "5m",
+      when: {
+        interval: "10m",
+      },
+    }
+  ],
+  control: {
+    socket: "/tmp/cp-redis.socket",
+  },
+  telemetry: {
+    port: 9090,
+    interfaces: ["en0"],
+    metrics: [
+      {
+        namespace: "ns",
+        subsystem: "sub",
+        name: "teapot_count",
+        help: "this is a test counter",
+        type: "counter"
+      }
+    ]
+  },
+}

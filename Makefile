@@ -26,11 +26,11 @@ help:
 # Container builds
 
 ## Builds the application container image locally
-build: test-runner
+build:
 	$(dockerLocal) build -t=$(image):$(tag) .
 
 ## Build the test running container
-test-runner:
+build/tester:
 	$(dockerLocal) build -f test/Dockerfile -t=$(testImage):$(tag) .
 
 ## Push the current application container images to the Docker Hub
@@ -38,16 +38,18 @@ push:
 	$(dockerLocal) push $(image):$(tag)
 	$(dockerLocal) push $(testImage):$(tag)
 
-## Tag the current images as 'latest'
+## Tag the current image as 'latest'
 tag:
-	$(dockerLocal) tag $(testImage):$(tag) $(testImage):latest
 	$(dockerLocal) tag $(image):$(tag) $(image):latest
+
+## Tag the current test image as 'latest'
+tag/tester:
+	$(dockerLocal) tag $(testImage):$(tag) $(testImage):latest
 
 ## Push latest tag(s) to the Docker Hub
 ship: tag
 	$(dockerLocal) push $(image):$(tag)
 	$(dockerLocal) push $(image):latest
-
 
 # ------------------------------------------------
 # Test running
@@ -55,87 +57,37 @@ ship: tag
 ## Pull the container images from the Docker Hub
 pull:
 	docker pull $(image):$(tag)
-	docker pull $(testImage):$(tag)
 
-$(DOCKER_CERT_PATH)/key.pub:
-	ssh-keygen -y -f $(DOCKER_CERT_PATH)/key.pem > $(DOCKER_CERT_PATH)/key.pub
+## Run all integration tests
+test: test/compose test/triton
 
-# For Jenkins test runner only: make sure we have public keys available
-SDC_KEYS_VOL ?= -v $(DOCKER_CERT_PATH):$(DOCKER_CERT_PATH)
-keys: $(DOCKER_CERT_PATH)/key.pub
-
-run-local:
-	cd examples/compose && TAG=$(tag) $(composeLocal) -p redis up -d
-
-stop-local:
-	cd examples/compose && TAG=$(tag) $(composeLocal) -p redis stop || true
-	cd examples/compose && TAG=$(tag) $(composeLocal) -p redis rm -f || true
-
-run:
-	$(call check_var, TRITON_PROFILE \
-		required to run the example on Triton.)
-	cd examples/triton && TAG=$(tag) docker-compose -p redis up -d
-
-stop:
-	$(call check_var, TRITON_PROFILE \
-		required to run the example on Triton.)
-	cd examples/compose && TAG=$(tag) docker-compose -p redis stop || true
-	cd examples/compose && TAG=$(tag) docker-compose -p redis rm -f || true
-
-test-image:
-	docker build -f test/Dockerfile .
-
-run-test-image-local:
-	$(dockerLocal) run -it --rm \
+## Run the integration test runner against Compose locally.
+test/compose:
+	docker run --rm \
+		-e TAG=$(tag) \
+		-e GIT_BRANCH=$(GIT_BRANCH) \
+		--network=bridge \
 		-v /var/run/docker.sock:/var/run/docker.sock \
-		-e TAG=$(tag) \
-		-e COMPOSE_FILE=compose/docker-compose.yml \
-		-e COMPOSE_HTTP_TIMEOUT=300 \
 		-w /src \
-		`docker build -f test/Dockerfile . | tail -n 1 | awk '{print $$3}'` \
-		sh
+		$(testImage):$(tag) /src/compose.sh
 
-run-test-image:
-	$(call check_var, TRITON_ACCOUNT TRITON_DC, \
+## Run the integration test runner. Runs locally but targets Triton.
+test/triton:
+	$(call check_var, TRITON_PROFILE, \
 		required to run integration tests on Triton.)
-	$(dockerLocal) run -it --rm \
+	docker run --rm \
 		-e TAG=$(tag) \
-		-e COMPOSE_FILE=triton/docker-compose.yml \
-		-e COMPOSE_HTTP_TIMEOUT=300 \
-		-e DOCKER_HOST=$(DOCKER_HOST) \
-		-e DOCKER_TLS_VERIFY=1 \
-		-e DOCKER_CERT_PATH=$(DOCKER_CERT_PATH) \
-		-e TRITON_ACCOUNT=$(TRITON_ACCOUNT) \
-		-e TRITON_DC=$(TRITON_DC) \
-		$(SDC_KEYS_VOL) -w /src \
-		$(testImage):$(tag) sh
-
-## Run integration tests against local Docker daemon
-test-local:
-	$(dockerLocal) run -it --rm \
-		-v /var/run/docker.sock:/var/run/docker.sock \
-		-e TAG=$(tag) \
-		-e COMPOSE_FILE=compose/docker-compose.yml \
-		-e COMPOSE_HTTP_TIMEOUT=300 \
+		-e TRITON_PROFILE=$(TRITON_PROFILE) \
+		-e GIT_BRANCH=$(GIT_BRANCH) \
+		-v ~/.ssh:/root/.ssh:ro \
+		-v ~/.triton/profiles.d:/root/.triton/profiles.d:ro \
 		-w /src \
-		`docker build -f test/Dockerfile . | tail -n 1 | awk '{print $$3}'` \
-		python3 tests.py
+		$(testImage):$(tag) /src/triton.sh
 
-## Run the integration test runner locally but target Triton
-test:
-	$(call check_var, TRITON_ACCOUNT TRITON_DC, \
-		required to run integration tests on Triton.)
-	$(dockerLocal) run --rm \
-		-e TAG=$(tag) \
-		-e COMPOSE_FILE=triton/docker-compose.yml \
-		-e COMPOSE_HTTP_TIMEOUT=300 \
-		-e DOCKER_HOST=$(DOCKER_HOST) \
-		-e DOCKER_TLS_VERIFY=1 \
-		-e DOCKER_CERT_PATH=$(DOCKER_CERT_PATH) \
-		-e TRITON_ACCOUNT=$(TRITON_ACCOUNT) \
-		-e TRITON_DC=$(TRITON_DC) \
-		$(SDC_KEYS_VOL) -w /src \
-		$(testImage):$(tag) sh tests.sh
+# runs the integration test above but entirely within your local
+# development environment rather than the clean test rig
+test/triton/dev:
+	./test/triton.sh
 
 ## Print environment for build debugging
 debug:
@@ -147,38 +99,6 @@ debug:
 	@echo image=$(image)
 	@echo testImage=$(testImage)
 
-# Create backup user/policies (usage: make manta EMAIL=example@example.com PASSWORD=pwd)
-# -------------------------------------------------------
-# Create user and policies for backups
-# Requires SDC_ACCOUNT to be set
-# usage:
-# make manta EMAIL=example@example.com PASSWORD=strongpassword
-#
-## Create backup user and policies
-manta:
-	$(call check_var, EMAIL PASSWORD SDC_ACCOUNT, \
-		Required to create a Manta login.)
-
-	ssh-keygen -t rsa -b 4096 -C "${EMAIL}" -f manta
-	sdc-user create --login=${MANTA_LOGIN} --password=${PASSWORD} --email=${EMAIL}
-	sdc-user upload-key $(ssh-keygen -E md5 -lf ./manta | awk -F' ' '{gsub("MD5:","");{print $2}}') --name=${MANTA_LOGIN}-key ${MANTA_LOGIN} ./manta.pub
-	sdc-policy create --name=${MANTA_POLICY} \
-		--rules='CAN getobject' \
-		--rules='CAN putobject' \
-		--rules='CAN putmetadata' \
-		--rules='CAN putsnaplink' \
-		--rules='CAN getdirectory' \
-		--rules='CAN putdirectory'
-	sdc-role create --name=${MANTA_ROLE} \
-		--policies=${MANTA_POLICY} \
-		--members=${MANTA_LOGIN}
-	mmkdir ${SDC_ACCOUNT}/stor/${MANTA_LOGIN}
-	mchmod -- +triton_redis /${SDC_ACCOUNT}/stor/${MANTA_LOGIN}
-
-
-# -------------------------------------------------------
-# helper functions for testing if variables are defined
-#
 check_var = $(foreach 1,$1,$(__check_var))
 __check_var = $(if $(value $1),,\
 	$(error Missing $1 $(if $(value 2),$(strip $2))))
