@@ -7,3 +7,5 @@ manta.pub
 .DS_Store
 
 node_modules
+vendor/
+TODO.md
