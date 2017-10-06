@@ -1,3 +1,0 @@
-[submodule "test/testing"]
-	path = test/testing
-	url = git@github.com:autopilotpattern/testing.git
